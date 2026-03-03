@@ -90,9 +90,10 @@ def createHourlyTimeCol(dataset, datetime, startDate):
 
 def calculateCarbonIntensity(dataset, carbonRate, numSources):
     global CARBON_INTENSITY_COLUMN
+    global SRC_START_COL
     carbonIntensity = 0
     carbonCol = []
-    miniDataset = dataset.iloc[:, CARBON_INTENSITY_COLUMN:CARBON_INTENSITY_COLUMN+numSources]
+    miniDataset = dataset.iloc[:, SRC_START_COL:SRC_START_COL+numSources]
     print("**", miniDataset.columns.values)
     rowSum = miniDataset.sum(axis=1).to_list()
     for i in range(len(miniDataset)):
@@ -103,7 +104,7 @@ def calculateCarbonIntensity(dataset, carbonRate, numSources):
             for j in range(1, len(dataset.columns.values)):
                 if(dataset.iloc[i, j] == 0):
                     dataset.iloc[i, j] = dataset.iloc[i-1, j]
-                miniDataset.iloc[i] = dataset.iloc[i, CARBON_INTENSITY_COLUMN:CARBON_INTENSITY_COLUMN+numSources]
+                miniDataset.iloc[i] = dataset.iloc[i, SRC_START_COL:SRC_START_COL+numSources]
                 # print(miniDataset.iloc[i])
             rowSum[i] = rowSum[i-1]
         carbonIntensity = 0
@@ -265,7 +266,10 @@ def runProgram(region, isLifecycle, isForecast, realTimeInFileName, realTimeOutF
         print("Real time carbon intensities:")
         # dataset.set_index("UTC time")
         dataset.to_csv(realTimeOutFileName)
-    
+        print("Written to:", realTimeOutFileName)
+        ci = dataset["carbon_intensity"]
+        print("Rows:", len(ci), "  Sample (first 5):", ci.iloc[:5].tolist(), "  ... (last 3):", ci.iloc[-3:].tolist())
+
     return
 
 def adjustColumns(region):
@@ -309,7 +313,10 @@ if __name__ == "__main__":
         isLifecycle = True
     if (sys.argv[3].lower() == "-f"):
         isForecast = True
-    for region in ISO_LIST:
+    if region not in ISO_LIST:
+        print("Unknown region. Choose from:", ISO_LIST)
+        exit(1)
+    for region in [region]:
         # print(region)
         # adjustColumns(region)
         print("CarbonCast: Calculating carbon intensity for region: ", region)        

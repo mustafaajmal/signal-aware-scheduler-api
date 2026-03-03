@@ -124,7 +124,8 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'default': '100/day'
-    }
+    },
+    'EXCEPTION_HANDLER': 'CarbonCastRESTAPI.exceptions.carboncast_exception_handler',
 }
 
 DEFAULT_THROTTLE_LIMIT = 10

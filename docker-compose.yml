@@ -2,8 +2,7 @@ version: '3.9'
 services:
   web:
     build:
-      context: ./src/CarbonCastAPI
-      dockerfile: dockerfile
+      dockerfile: src/CarbonCastAPI/dockerfile
     container_name: carbon_cast_api
     ports:
     - "8000:8000"

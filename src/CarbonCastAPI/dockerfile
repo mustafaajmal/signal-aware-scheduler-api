@@ -1,0 +1,14 @@
+# CarbonCast API — run with docker-compose from repo root.
+# Build context is this directory (src/CarbonCastAPI) so paths are relative to it.
+FROM python:3.11-slim
+
+WORKDIR /CarbonCast
+
+# Copy app code first so we can install deps (real_time and db mounted at runtime)
+COPY . src/CarbonCastAPI/
+RUN pip install --no-cache-dir -r src/CarbonCastAPI/requirements.txt
+
+EXPOSE 8000
+
+# Run server; CWD is /CarbonCast so helper.py finds /CarbonCast/real_time
+CMD ["python", "src/CarbonCastAPI/manage.py", "runserver", "0.0.0.0:8000"]

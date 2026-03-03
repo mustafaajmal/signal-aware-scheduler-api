@@ -1,0 +1,32 @@
+# Ignore when building the CarbonCast API image (context: src/CarbonCastAPI)
+
+# Git and IDE
+.git
+.gitignore
+.vscode
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+env
+.env
+
+# DB and local data (use mounted volume in Docker)
+db.sqlite3
+*.sqlite3
+
+# Tests and docs (not needed in container)
+*.md
+!README.md
+
+# Build files (not needed in image)
+dockerfile
+.dockerignore

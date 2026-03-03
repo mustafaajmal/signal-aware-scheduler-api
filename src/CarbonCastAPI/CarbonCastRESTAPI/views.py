@@ -16,12 +16,21 @@ from django.shortcuts import redirect, render
 from django.conf import settings
 from .models import UserModel, UserThrottleLimit
 from .serializers import UserSerializer
-from .helper import get_latest_csv_file, get_actual_value_file_by_date, get_CI_forecasts_csv_file, get_energy_forecasts_csv_file
+from .helper import (
+    get_latest_csv_file,
+    get_actual_value_file_by_date,
+    get_CI_forecasts_csv_file,
+    get_energy_forecasts_csv_file,
+    get_ci_forecast_series,
+    get_best_slot_indices_for_job,
+    RealTimeDataNotFoundError,
+)
 import os
 from .consts import carbon_cast_version, authentication_classes, permission_classes, US_region_codes
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from datetime import datetime
+
 def check_throttle_limit(user):
     try:
         throttle_limit_obj = user.userthrottlelimit  # Access the related UserThrottleLimit object
@@ -46,7 +55,7 @@ class CarbonIntensityApiView(APIView):
     print(authentication_classes, permission_classes)
     authentication_classes = authentication_classes
     permission_classes = permission_classes
-
+ 
     @swagger_auto_schema(
     manual_parameters=[
         openapi.Parameter('region_code', openapi.IN_QUERY, description="Region code parameter (e.g., 'AECI').", type=openapi.TYPE_STRING),
@@ -91,36 +100,38 @@ class CarbonIntensityApiView(APIView):
                  "carbon_intensity_avg_direct", "cabon_intensity_unit"
                  ]
         
-            final_list=[]
-        
+            final_list = []
+
             for region_code in regions:
-                csv_file1, csv_file2 = get_latest_csv_file(region_code)
+                try:
+                    csv_file1, csv_file2 = get_latest_csv_file(region_code)
+                except RealTimeDataNotFoundError as e:
+                    return Response(
+                        {"error": str(e.message), "carbon_cast_version": carbon_cast_version},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
                 print(csv_file1)
                 print(csv_file2)
                 with open(csv_file1) as file:
                     for line in file:
-                        # pass
                         values_csv1 = line.split(',')
                 with open(csv_file2) as file:
                     for line in file:
                         values_csv2 = line.split(',')
 
                 temp_dict = {
-                fields[0]: values_csv1[1],
-                fields[1]: values_csv1[2],
-                fields[2]: values_csv1[3],
-                fields[3]: region_code,
-                fields[4]: float(values_csv1[4]),
-                fields[5]: float(values_csv2[4]),
-                fields[6]: "gCO2eg/kWh"
+                    fields[0]: values_csv1[1],
+                    fields[1]: values_csv1[2],
+                    fields[2]: values_csv1[3],
+                    fields[3]: region_code,
+                    fields[4]: float(values_csv1[4]),
+                    fields[5]: float(values_csv2[4]),
+                    fields[6]: "gCO2eg/kWh"
                 }
                 final_list.append(temp_dict)
-                
-            response = {
-                "data": final_list
-            }
+
+            response = {"data": final_list}
             return Response(response, status=status.HTTP_200_OK)
-            final_list.append(temp_dict)
             
         response = {
             "data": final_list,
@@ -621,7 +632,112 @@ class SupportedRegionsApiView(APIView):
             "carbon_cast_version": carbon_cast_version
         }
         return Response(response, status=status.HTTP_200_OK)
-    
+
+
+class ScheduleJobApiView(APIView):
+    """
+    POST: Returns a JSON recommendation of times and TCO to run a job (no actual
+    scheduling). Uses the region's 96-hour carbon intensity forecast; returns
+    chosen_times, chosen_slot_indices, and total_cost for the client to use when
+    scheduling the job.
+    """
+    authentication_classes = authentication_classes
+    permission_classes = permission_classes
+
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["region_code", "L", "deadline_index", "is_continuous"],
+            properties={
+                "region_code": openapi.Schema(type=openapi.TYPE_STRING, description="Region code (e.g. CISO, PJM) for carbon intensity forecast"),
+                "L": openapi.Schema(type=openapi.TYPE_INTEGER, description="Job length in hours"),
+                "deadline_index": openapi.Schema(type=openapi.TYPE_INTEGER, description="Hours from now until deadline (exclusive end)"),
+                "is_continuous": openapi.Schema(type=openapi.TYPE_BOOLEAN, description="True = run contiguously, False = can be broken up"),
+                "emission_type": openapi.Schema(type=openapi.TYPE_STRING, enum=["lifecycle", "direct"], description="Carbon intensity type (default: lifecycle)"),
+                "date": openapi.Schema(type=openapi.TYPE_STRING, description="Forecast date YYYY-MM-DD (default: today UTC)"),
+            },
+        ),
+        responses={
+            200: "Recommendation: chosen_times, chosen_slot_indices, total_cost (no actual scheduling performed)",
+            400: "Invalid request body or parameters",
+            404: "No forecast data for region",
+        },
+    )
+    def post(self, request, *args, **kwargs):
+        if permissions.AllowAny not in permission_classes:
+            user = request.user
+            if not check_throttle_limit(user):
+                return Response({
+                    "status": "fail",
+                    "message": "Throttle limit reached",
+                    "carbon_cast_version": carbon_cast_version
+                }, status=status.HTTP_429_TOO_MANY_REQUESTS, headers={'Retry-After': 86400})
+
+        data = request.data
+        region_code = (data.get("region_code") or "").strip().upper()
+        if not region_code:
+            return Response({
+                "error": "region_code is required (e.g. CISO, PJM).",
+                "carbon_cast_version": carbon_cast_version,
+            }, status=status.HTTP_400_BAD_REQUEST)
+        if region_code not in US_region_codes:
+            return Response({
+                "error": f"Invalid region_code. Use one of: {US_region_codes[:10]}... or see SupportedRegions.",
+                "carbon_cast_version": carbon_cast_version,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            L = int(data.get("L"))
+            deadline_index = int(data.get("deadline_index"))
+            is_continuous = bool(data.get("is_continuous"))
+        except (TypeError, ValueError):
+            return Response({
+                "error": "L and deadline_index must be integers; is_continuous must be boolean.",
+                "carbon_cast_version": carbon_cast_version,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        emission_type = (data.get("emission_type") or "lifecycle").lower()
+        if emission_type not in ("lifecycle", "direct"):
+            emission_type = "lifecycle"
+        forecast_date = data.get("date")
+
+        if L <= 0 or deadline_index <= 0:
+            return Response({
+                "error": "L and deadline_index must be positive.",
+                "carbon_cast_version": carbon_cast_version,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            times, tco = get_ci_forecast_series(region_code, emission_type=emission_type, date=forecast_date)
+        except RealTimeDataNotFoundError as e:
+            return Response({
+                "error": str(e.message),
+                "carbon_cast_version": carbon_cast_version,
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        result = get_best_slot_indices_for_job(L, deadline_index, is_continuous, tco)
+
+        if result is None:
+            return Response({
+                "recommendation_available": False,
+                "error": "Job cannot fit before deadline (not enough hours).",
+                "region_code": region_code,
+                "carbon_cast_version": carbon_cast_version,
+            }, status=status.HTTP_200_OK)
+
+        chosen_indices, total_cost = result
+        chosen_times = [times[i] for i in chosen_indices]
+
+        return Response({
+            "recommendation_available": True,
+            "region_code": region_code,
+            "emission_type": emission_type,
+            "chosen_times": chosen_times,
+            "chosen_slot_indices": chosen_indices,
+            "total_cost": total_cost,
+            "carbon_cast_version": carbon_cast_version,
+        }, status=status.HTTP_200_OK)
+
 
 class UserAuthenticationEnforcedView(APIView):
     permission_classes = [permissions.AllowAny]
